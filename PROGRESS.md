@@ -8,8 +8,8 @@
 
 | Phase | State | Started | Closed |
 |-------|-------|---------|--------|
-| **Phase 0** — Foundation Infrastructure | 🟢 Built locally; deploy pending | 2026-04-29 | — |
-| Phase 1 — Calendar Agent | ⚪ Not started | — | — |
+| **Phase 0** — Foundation Infrastructure | 🟢 Deployed; E2E verified on prod | 2026-04-29 | 2026-04-30 |
+| Phase 1 — Calendar Agent | ⚪ Not started (blocked on OAuth-mode + Anthropic key) | — | — |
 | Phase 2 — Memory Layer | ⚪ Not started | — | — |
 | Phase 3 — Email Agent | ⚪ Not started | — | — |
 | Phase 4+ | ⚪ Not started | — | — |
@@ -41,7 +41,14 @@ Before scaffolding, we revised both spec docs to address 10 gaps. Each is reflec
 
 > **Definition of Done:** Send Telegram message → bot echoes within 5s, deployed on Hetzner, allowlisted, deduplicated, fully logged, no AI. `/start`, `/help`, `/ping` work without invoking the (future) agent.
 
-**Current state:** All code shipped and tested locally. Deploy step (US-0.10) deferred — requires operator-owned VM + DNS.
+**Current state:** ✅ **Definition of Done met.** Stack live at `https://jarvis.dave-ail.cc`. All four interaction patterns verified end-to-end from Telegram on 2026-04-30 (`/ping`, `/help`, `/start`, plain-text echo).
+
+**Production stack:**
+- Host: Hetzner CX23, Helsinki, Ubuntu 24.04, IPv4 `62.238.28.161`
+- Domain: `jarvis.dave-ail.cc` (Cloudflare DNS-only, gray cloud)
+- Containers: `api`, `worker`, `redis`, `postgres`, `caddy` (all running, all healthcheck-passing)
+- TLS: Let's Encrypt (auto-renewing via Caddy)
+- Hardening: UFW (22/80/443), fail2ban, key-only SSH, password auth disabled, unattended-upgrades
 
 ### Stories
 
@@ -49,14 +56,14 @@ Before scaffolding, we revised both spec docs to address 10 gaps. Each is reflec
 |----|-------|-------|---------------|
 | US-0.1 | Project skeleton | 🟢 | [`pyproject.toml`](pyproject.toml), [`.gitignore`](.gitignore), [`.pre-commit-config.yaml`](.pre-commit-config.yaml), [`README.md`](README.md), full `src/jarvis/` tree |
 | US-0.2 | Local dev environment | 🟢 | [`docker-compose.yml`](docker-compose.yml) + [`docker-compose.prod.yml`](docker-compose.prod.yml) + [`Dockerfile`](docker/Dockerfile) + [`Caddyfile`](docker/Caddyfile) + [`Makefile`](Makefile) + [`.env.example`](.env.example) |
-| US-0.3 | Telegram bot registration | 🔵 | Runbook done at [`docs/runbooks/bot-registration.md`](docs/runbooks/bot-registration.md); operator must run BotFather steps |
+| US-0.3 | Telegram bot registration | 🟢 | Bot live; webhook registered at `https://jarvis.dave-ail.cc/webhooks/telegram`; runbook at [`docs/runbooks/bot-registration.md`](docs/runbooks/bot-registration.md) |
 | US-0.4 | FastAPI webhook + `/health` | 🟢 | [`src/jarvis/api/webhooks.py`](src/jarvis/api/webhooks.py), [`src/jarvis/api/health.py`](src/jarvis/api/health.py), [`src/jarvis/api/main.py`](src/jarvis/api/main.py) |
 | US-0.5 | Idempotency layer | 🟢 | [`src/jarvis/core/idempotency.py`](src/jarvis/core/idempotency.py) — Redis `SET NX EX 86400` |
 | US-0.6 | Allowlist middleware | 🟢 | [`src/jarvis/core/security.py`](src/jarvis/core/security.py) — silent drop, no info leak |
 | US-0.7 | Async task queue | 🟢 | [`src/jarvis/workers/celery_app.py`](src/jarvis/workers/celery_app.py) — `acks_late=True`, `reject_on_worker_lost=True`, time limits, retry backoff |
 | US-0.8 | Structured logging | 🟢 | [`src/jarvis/core/logging.py`](src/jarvis/core/logging.py) — JSON in prod / pretty in dev, PII redaction by default, `correlation_id` propagation |
 | US-0.9 | Echo worker (no AI) | 🟢 | [`src/jarvis/workers/tasks.py`](src/jarvis/workers/tasks.py) — 2s sleep + echo, retries on send failure |
-| US-0.10 | Hetzner deployment | 🟠 | Runbook ready at [`docs/runbooks/deploy-hetzner.md`](docs/runbooks/deploy-hetzner.md); blocked on operator VM + DNS |
+| US-0.10 | Hetzner deployment | 🟢 | CX23 Helsinki + Cloudflare DNS + Let's Encrypt all up; runbook at [`docs/runbooks/deploy-hetzner.md`](docs/runbooks/deploy-hetzner.md) |
 | US-0.11 | Configuration management | 🟢 | [`src/jarvis/core/settings.py`](src/jarvis/core/settings.py) — pydantic-settings, `SecretStr`, `@lru_cache`, fail-fast on missing required |
 | US-0.12 | Slash-command pre-handler **(new)** | 🟢 | [`src/jarvis/tools/commands.py`](src/jarvis/tools/commands.py) — registry pattern; `/start`, `/help`, `/ping` registered |
 
@@ -77,7 +84,9 @@ Before scaffolding, we revised both spec docs to address 10 gaps. Each is reflec
 | `ruff format --check` | ✅ 32 files clean | `make lint` |
 | `mypy --strict` | ✅ 23 source files, 0 errors | `make typecheck` |
 | `pytest` | ✅ 28 passed, 1 deprecation warning | `make test` |
-| End-to-end echo via Telegram | ⚪ Not yet — requires bot token + ngrok | manual |
+| External HTTPS `/health` (prod) | ✅ `{"status":"ok","redis":true}` | `curl https://jarvis.dave-ail.cc/health` |
+| Telegram `getWebhookInfo` (prod) | ✅ `pending_update_count: 0`, IP correct | manual |
+| End-to-end Telegram round-trip (prod) | ✅ `/ping`, `/help`, `/start`, plain echo all working | manual, 2026-04-30 |
 
 ### Test coverage (Phase 0)
 
@@ -135,10 +144,25 @@ prompts/                              # Phase 1+
 
 ## Changelog
 
+### 2026-04-30 — Phase 0 closed (production deploy + E2E)
+
+- GitHub repo created at [Davidco94/jarvis-asist](https://github.com/Davidco94/jarvis-asist); main pushed.
+- Hetzner CX23 provisioned in Helsinki; Ubuntu 24.04, IPv4 `62.238.28.161`.
+- Cloudflare DNS A record `jarvis.dave-ail.cc` → server IP, **DNS-only mode** (gray cloud) so Caddy could complete LE HTTP-01 challenge.
+- Server hardened: UFW (22/80/443 only), fail2ban, key-only SSH, password auth disabled, unattended-upgrades.
+- Two Dockerfile fixes pushed during deploy:
+  - `python:3.12-slim` → `python:3.12-slim-bookworm` (Trixie sync gap on `deb.debian.org` was returning 404 for `linux-libc-dev`).
+  - `COPY pyproject.toml README.md ./` (hatchling validates the README at build time).
+- One compose fix pushed: `env_file: [.env]` on the `caddy` service so `{$DOMAIN}` in the Caddyfile gets substituted.
+- All 5 containers running and healthy; Let's Encrypt cert obtained on first start.
+- Telegram webhook registered; `getWebhookInfo` confirms.
+- E2E verified from operator's Telegram: `/ping`, `/help`, `/start`, plain-text echo all working.
+- US-0.3 and US-0.10 closed.
+
 ### 2026-04-29 — Phase 0 scaffold
 
 - Revised both spec docs with 10 plan-level fixes (see *Spec revisions* table above).
 - Built US-0.1 through US-0.9, US-0.11, and new US-0.12 end-to-end.
 - All 28 unit tests pass; ruff + mypy --strict clean.
-- US-0.3 and US-0.10 documented as runbooks; remaining steps require operator hardware/identity.
+- US-0.3 and US-0.10 documented as runbooks; remaining steps required operator hardware/identity.
 - `CLAUDE.md` written at repo root with load-bearing rules (single-agent, plugin pattern, dependency direction, no-PII default).
