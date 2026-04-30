@@ -43,6 +43,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    env_file: [.env]   # provides DOMAIN= for Caddyfile env-substitution
     ports:
       - "80:80"
       - "443:443"
