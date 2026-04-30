@@ -1,0 +1,24 @@
+# Caddy reverse proxy for production.
+# Set DOMAIN in .env (or pass via env var). Caddy fetches Let's Encrypt automatically.
+
+{$DOMAIN} {
+    encode gzip
+
+    # Telegram only POSTs to /webhooks/*; everything else is locked down.
+    @public {
+        path /webhooks/* /health
+    }
+
+    handle @public {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        respond 404
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

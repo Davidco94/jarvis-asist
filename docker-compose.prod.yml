@@ -1,0 +1,58 @@
+# Production overlay. Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences vs base:
+#   - Adds Caddy as reverse proxy with automatic Let's Encrypt
+#   - Drops exposed Postgres/Redis ports (only reachable inside the compose network)
+#   - Removes source bind-mounts (image is the source of truth)
+#   - restart: unless-stopped on every service
+
+services:
+  redis:
+    ports: []
+    restart: unless-stopped
+
+  postgres:
+    ports: []
+    restart: unless-stopped
+
+  api:
+    volumes: []
+    ports: []
+    environment:
+      ENV: prod
+      LOG_FORMAT: json
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - jarvis.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "2"
+
+  worker:
+    volumes: []
+    environment:
+      ENV: prod
+      LOG_FORMAT: json
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy-data:
+  caddy-config:
