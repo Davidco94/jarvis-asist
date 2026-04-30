@@ -1,15 +1,13 @@
-FROM python:3.12-slim AS base
+FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# slim-bookworm already has ca-certificates; we don't need build-essential because
+# every runtime dep ships manylinux wheels for amd64+py3.12, and the healthcheck
+# uses python -c urllib.request, not curl.
 
 # uv for fast deps install
 COPY --from=ghcr.io/astral-sh/uv:0.5.13 /uv /usr/local/bin/uv
