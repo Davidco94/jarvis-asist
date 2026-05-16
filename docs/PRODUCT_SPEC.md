@@ -263,15 +263,15 @@ Build a personal AI assistant that lives alongside the user as a productivity pa
 
 **Goal:** First real AI-powered capability. Establish the agent loop, tool registry pattern, and confirmation flows that all future capabilities will reuse.
 
-#### US-1.1: Anthropic API Setup & Cost Monitoring
+#### US-1.1: LLM Provider Setup & Quota Monitoring
 **Acceptance Criteria:**
-- [ ] Anthropic API key with prepaid credits (max $10 initial)
-- [ ] Daily cost cap configured at provider level
-- [ ] Local middleware logs token usage per request (input/output/cached)
-- [ ] Daily aggregate cost computed and logged
-- [ ] **Daily LLM cap (Anthropic + Voyage) = 1.5 NIS/day.** Excludes fixed costs (Hetzner ~14 NIS/mo, domain ~4 NIS/mo); 1.5 × 30 = 45 NIS/mo theoretical max LLM, realistic spend 15–25 NIS/mo per ARCHITECTURE.md §7.3.
-- [ ] If daily LLM cost exceeds 1.5 NIS, system sends self-alert via Telegram and pauses LLM-using tasks (slash commands still work).
-- [ ] **MTD total cap = 50 NIS** (all line items). At 90% (45 NIS), system pauses with operator alert.
+- [ ] Google AI Studio free-tier API key for Gemini 2.5 Flash (no billing attached). See [docs/decisions/llm-provider.md](decisions/llm-provider.md) for the provider decision and paid-swap path.
+- [ ] Groq free-tier API key for Llama 3.3 70B Versatile (trivial routing only, English-only).
+- [ ] LangSmith API key configured if available; absent key is acceptable (US-1.15 graceful degradation).
+- [ ] Local middleware logs token usage per request (input/output/cached).
+- [ ] **Daily RPD guard (free tier):** Redis counter `gemini:rpd:{YYYY-MM-DD}` increments per Gemini call. At 200/day (80% of the ~250 RPD free cap), system sends Telegram self-alert. At 240/day, system pauses LLM-using tasks (slash commands still work). Resets at local midnight.
+- [ ] **Daily TPM guard (Groq):** if any Groq call returns 429, mark Groq circuit open for 60s; trivial-route prompts fall back to Gemini.
+- [ ] **MTD total cost cap = 50 NIS** (all line items, including infra). Tracked even at zero LLM spend; the cap exists so a paid swap (see decision doc) can't silently breach the ceiling. At 90% (45 NIS), system pauses with operator alert.
 
 #### US-1.2: Google Cloud Project & Calendar API Enablement
 **Acceptance Criteria:**
@@ -299,14 +299,16 @@ Build a personal AI assistant that lives alongside the user as a productivity pa
 - [ ] `ToolDefinition` dataclass: name, description, category, handler, requires_confirmation, scopes, json_schema
 - [ ] `ToolRegistry` singleton with `register()`, `get()`, `list_for_llm()`
 - [ ] Registry auto-discovers tools via Python entry points or explicit registration on import
-- [ ] Tool descriptions follow the Anthropic tool-use schema format
+- [ ] Tool descriptions emit a JSON-Schema-based definition compatible with the chosen provider's function-calling format (Gemini in Phase 1; the same schema feeds Anthropic / OpenAI / Groq through the `LLMRouter` adapter)
 - [ ] Unit tests for registration, retrieval, and schema generation
 
 #### US-1.5: Single Agent with LangGraph
 **Acceptance Criteria:**
 - [ ] LangGraph state object: `messages`, `tool_calls`, `tool_results`, `user_id`, `confirmation_pending`
 - [ ] Graph nodes: `agent` (LLM call) → conditional → `tool_executor` → loop back to `agent` → `END`
-- [ ] Uses Claude Haiku 4.5 by default, Sonnet only when `complexity_hint=high`
+- [ ] Uses **Gemini 2.5 Flash** (AI Studio free tier) by default for the agent loop; Groq Llama 3.3 70B Versatile for `complexity_hint=trivial` (English-only classification/routing); `complexity_hint=high` is a reserved slot for a future paid escalation lane (Gemini 2.5 Pro or equivalent) — **not implemented in Phase 1**.
+- [ ] **No streaming on tool-call turns** (Gemini's parallel-tool-call streaming has known bugs; sequential non-streaming matches our Celery worker model anyway).
+- [ ] Hebrew prompts are pinned to Gemini (never routed to Groq); language detection is conservative — default to Gemini if uncertain.
 - [ ] LangGraph checkpointer uses PostgreSQL for thread persistence
 - [ ] Each conversation has a `thread_id` derived from Telegram chat_id
 - [ ] System prompt loaded from `prompts/system_v1.md` (versioned file)
@@ -362,16 +364,18 @@ Build a personal AI assistant that lives alongside the user as a productivity pa
 - [ ] All datetimes presented to user in `Asia/Jerusalem`
 - [ ] System prompt includes current local **date, time, and weekday** in `Asia/Jerusalem` (refreshed on every turn, not cached)
 - [ ] DST transitions tested explicitly (Israel DST ≠ Europe DST; Israel transitions on the Friday before the last Sunday in March / October)
-- [ ] **Natural language dates resolved by the LLM** (not `dateparser`). Reason: `dateparser` does not reliably handle Hebrew expressions ("מחר", "השבוע הבא", "בעוד שבועיים"); modern Claude Haiku resolves these correctly when given today's date in the system prompt.
+- [ ] **Natural language dates resolved by the LLM** (not `dateparser`). Reason: `dateparser` does not reliably handle Hebrew expressions ("מחר", "השבוע הבא", "בעוד שבועיים"); a modern multilingual LLM (Gemini 2.5 Flash for Phase 1) resolves these correctly when given today's date in the system prompt.
 - [ ] Eval suite includes adversarial date prompts: relative ("in 3 days"), absolute ("April 5"), Hebrew relative ("מחר אחה״צ"), mixed-language ("schedule תור at 5pm next Tuesday"), DST-boundary, and ambiguous ("next Friday" said on a Friday).
 - [ ] Tool parameters always carry resolved ISO-8601 datetimes (`start_iso`, `end_iso`); the LLM is responsible for the resolution and the tool refuses non-ISO input.
 
 #### US-1.12: Hebrew Language Validation
 **Acceptance Criteria:**
-- [ ] Eval set includes 5 Hebrew prompts
-- [ ] Agent responds in the language the user wrote in
-- [ ] Hebrew date expressions ("מחר", "השבוע הבא") resolve correctly
-- [ ] System prompt explicitly instructs RTL-aware formatting in responses
+- [ ] Eval set includes **5 Hebrew prompts** (unchanged weight: Hebrew matters but isn't the majority of traffic).
+- [ ] Agent responds in the language the user wrote in.
+- [ ] Hebrew date expressions ("מחר", "השבוע הבא") resolve correctly.
+- [ ] System prompt explicitly instructs RTL-aware formatting in responses.
+- [ ] **Routing constraint:** Hebrew detection in the router pins the request to Gemini (never Groq's Llama 3.3, which is not trained on Hebrew). The eval suite includes an explicit assertion that a Hebrew prompt selects the Gemini path.
+- [ ] If Hebrew tool-selection accuracy drops below 85% on Flash, that's the trigger to A/B against paid Gemini 2.5 Pro (see [docs/decisions/llm-provider.md](decisions/llm-provider.md) "Paid swap path").
 
 #### US-1.13: Audit Log
 **Acceptance Criteria:**
@@ -386,7 +390,7 @@ Build a personal AI assistant that lives alongside the user as a productivity pa
 - [ ] CLI: `python -m jarvis.evals run --suite calendar`
 - [ ] Each eval has: prompt, expected_tool_called, expected_parameters_match (loose), expected_response_contains
 - [ ] Tool-selection accuracy measured (% of evals where correct tool called)
-- [ ] LLM-as-judge for response-quality scoring (Claude Haiku as judge)
+- [ ] LLM-as-judge for response-quality scoring (Gemini 2.5 Flash as judge — same provider keeps eval cost at zero)
 - [ ] Results dumped to JSON; latest result committed to repo
 - [ ] Initial threshold: 85% tool-selection accuracy on 20-prompt eval set
 
@@ -398,15 +402,16 @@ Build a personal AI assistant that lives alongside the user as a productivity pa
 - [ ] Free tier (5k traces/month) is sufficient for personal use
 - [ ] Fallback: if LangSmith key absent, system runs without tracing (graceful degradation)
 
-#### US-1.16: Cost Guard Rails
+#### US-1.16: Cost & Quota Guard Rails
 **Acceptance Criteria:**
-- [ ] Per-conversation token budget: 30,000 tokens max
-- [ ] On approach (80%): agent injects "approaching context limit, summarizing"
-- [ ] System prompt + tool definitions are cached (Anthropic prompt caching)
-- [ ] Daily cost reported to operator at end of day via Telegram
+- [ ] Per-conversation token budget: 30,000 tokens max.
+- [ ] On approach (80%): agent injects "approaching context limit, summarizing".
+- [ ] System prompt + tool definitions are cached using **Gemini implicit/explicit context caching** (Gemini supports caching natively; ~60% input-cost discount on cached portion when we move to paid). On the free tier caching reduces TPM pressure rather than dollar cost.
+- [ ] Daily quota usage reported to operator at end of day via Telegram (RPD used / cap, top 3 expensive turns by token count).
+- [ ] When the paid-swap trigger fires (per [docs/decisions/llm-provider.md](decisions/llm-provider.md)), the daily report includes actual NIS spend.
 
 **Definition of Done for Phase 1:**
-> All 4 calendar tools work end-to-end with confirmations. Eval suite passes at ≥85% tool-selection accuracy. Total monthly cost projected under 30 NIS. Audit log captures every action.
+> All 4 calendar tools work end-to-end with confirmations. Eval suite passes at ≥85% tool-selection accuracy. **Phase 1 total monthly LLM cost = 0 NIS (free tier).** Total infra-only spend under 25 NIS/mo. Audit log captures every action.
 
 ---
 

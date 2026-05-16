@@ -89,8 +89,9 @@ These principles drive every technical decision in this project. When in doubt, 
                 │            │              │              │
                 ▼            ▼              ▼              ▼
        ┌──────────────┐ ┌─────────┐ ┌──────────────┐ ┌───────────┐
-       │ Anthropic API│ │  Groq   │ │Google APIs   │ │ LangSmith │
-       │ Haiku/Sonnet │ │  Llama  │ │ Cal + Gmail  │ │ tracing   │
+       │ Google       │ │  Groq   │ │Google APIs   │ │ LangSmith │
+       │ Gemini 2.5   │ │ Llama   │ │ Cal + Gmail  │ │ tracing   │
+       │ Flash (free) │ │ 3.3 70B │ │              │ │ (optional)│
        └──────────────┘ └─────────┘ └──────────────┘ └───────────┘
 ```
 
@@ -158,12 +159,12 @@ These principles drive every technical decision in this project. When in doubt, 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | Agent framework | LangGraph | State-machine semantics, checkpointing, the de facto standard for tool-using agents |
-| Primary LLM | Claude Haiku 4.5 | Best cost/quality ratio for tool-calling; strong Hebrew |
-| Complex reasoning LLM | Claude Sonnet 4.7 | For multi-step planning, escalated complexity |
-| Trivial routing LLM | Llama 3.3 70B via Groq (free tier) | Free; near-instant; sufficient for classification |
+| Primary LLM | **Gemini 2.5 Flash** (AI Studio free tier) | Strong Hebrew + reliable tool calling at $0/mo. See [decisions/llm-provider.md](../docs/decisions/llm-provider.md). |
+| Trivial routing LLM | Llama 3.3 70B Versatile via Groq (free tier) | Free; sub-300ms TTFT; sufficient for classification. **English only** (Hebrew not officially supported). |
+| Future paid escalation lane | Reserved (Gemini 2.5 Pro / Claude Sonnet candidates) | `complexity_hint=high` slot; **not implemented in Phase 1**. Triggered by paid-swap decision (see decisions/llm-provider.md). |
 | Embeddings | Voyage AI `voyage-3-lite` | Cheap (~$0.02/M tokens), competitive quality |
-| Tracing | LangSmith free tier | 5K traces/month sufficient for personal use |
-| Eval | Custom + LLM-as-judge (Haiku) | Lightweight, version-controlled YAML cases |
+| Tracing | LangSmith free tier (optional) | 5K traces/month sufficient; absent key = graceful degradation, no tracing |
+| Eval | Custom + LLM-as-judge (Gemini 2.5 Flash) | Same provider as agent; eval cost = 0 NIS on free tier |
 
 ### 4.3 Quality / Tooling
 
@@ -245,16 +246,19 @@ These principles drive every technical decision in this project. When in doubt, 
 
 ---
 
-### ADR-005: Anthropic Primary, Multi-Provider via Adapter
-**Decision:** Claude Haiku 4.5 as default; Claude Sonnet for complex; Groq Llama for trivial. All hidden behind an `LLMRouter` interface.
+### ADR-005: Gemini Primary, Multi-Provider via Adapter
+**Decision:** Gemini 2.5 Flash (AI Studio free tier) as default for the agent loop; Groq Llama 3.3 70B for trivial English-only routing; a reserved `complexity_hint=high` lane for future paid escalation (Gemini 2.5 Pro or Claude Sonnet, not in Phase 1). All hidden behind an `LLMRouter` interface.
 
 **Reasoning:**
-- Best Hebrew handling among major providers.
-- Strong tool-calling reliability.
-- Cost ramps gracefully (Haiku << Sonnet).
-- Groq's free tier handles classification/routing without cost.
+- Phase 1 must run on a free or near-free LLM with reliable tool calling (operator constraint, 2026-04-30). Anthropic prepay is off the table.
+- Gemini 2.5 Flash is the only free-tier option of the three evaluated (Gemini, Groq, OpenRouter) with strong Hebrew handling — decisive for this operator who code-switches Hebrew/English.
+- Tool calling is reliable in non-streaming sequential mode (which is the natural pattern for a Telegram + Celery agent: no streaming UX, one tool call per turn).
+- 250 RPD free-tier ceiling covers expected volume (30–100 turns/day) with 2.5–8× headroom.
+- Groq's free tier handles English-only classification/routing at sub-300ms TTFT; **Hebrew prompts are pinned to Gemini** (Llama 3.3 was not trained on Hebrew).
 
-**Reversibility:** Easy. `LLMRouter` interface allows swapping providers per task type via config.
+**Trade-off:** Google has previously cut Gemini free-tier quota by 90% without notice (Dec 2025). Mitigations: (1) daily RPD guard with operator alert at 80%, (2) `LLMRouter` makes a swap to paid Tier 1 Gemini a one-env-var change (cost projection in [decisions/llm-provider.md](../docs/decisions/llm-provider.md) fits the 50 NIS/mo ceiling).
+
+**Reversibility:** Easy. `LLMRouter` interface allows swapping providers per task type via config. Full comparison of the three free-tier candidates lives in [decisions/llm-provider.md](../docs/decisions/llm-provider.md).
 
 ---
 
@@ -318,21 +322,22 @@ These principles drive every technical decision in this project. When in doubt, 
 - Webhook → Idempotency check (Redis) → Allowlist (env config) → Enqueue (Celery)
 - Worker → Echo handler → Telegram Bot API send
 
-**NOT YET:** No LangGraph, no Anthropic, no Google APIs, no memory.
+**NOT YET:** No LangGraph, no LLM provider (Gemini/Groq), no Google APIs, no memory.
 
 ---
 
 ### Phase 1: Calendar Agent
 **New components introduced:**
 - LangGraph + LangChain core
-- Anthropic SDK + Claude Haiku 4.5 + Sonnet 4.7 (Sonnet on-demand only)
-- Groq SDK (Llama 3.3 free tier) for trivial routing
-- LangSmith client
-- google-auth + google-api-python-client + google-auth-oauthlib
+- **`google-genai` SDK** for Gemini 2.5 Flash (AI Studio free tier)
+- Groq SDK (Llama 3.3 70B free tier) for trivial English-only routing
+- LangSmith client (optional — graceful degradation if no API key)
+- google-auth + google-api-python-client + google-auth-oauthlib (Calendar OAuth)
 - `cryptography.fernet` for OAuth token encryption
-- `dateparser` for natural language date parsing
 - `tenacity` for retries; `pybreaker` for circuit breakers
-- Eval framework (custom Python + YAML)
+- Eval framework (custom Python + YAML), Gemini Flash as judge
+- **NOT used:** `dateparser` (Hebrew dates resolved by the LLM, per SPEC US-1.11)
+- **NOT used in Phase 1:** Anthropic SDK; Gemini 2.5 Pro escalation lane (reserved for future)
 
 **Critical integration points:**
 - Worker → LangGraph agent → Tool Registry → Calendar tool → Google Calendar API (with circuit breaker)
@@ -354,7 +359,7 @@ These principles drive every technical decision in this project. When in doubt, 
 - Async fact-extraction worker (separate Celery task)
 
 **Critical integration points:**
-- After each turn → async task → Haiku call → extract facts → embed → upsert in `semantic_facts`
+- After each turn → async task → cheap LLM call (Gemini 2.5 Flash; reuses primary provider) → extract facts → embed → upsert in `semantic_facts`
 - Before each agent call → similarity search → top-K facts injected into system prompt
 - `/forget` commands → audit-logged deletions
 
@@ -387,7 +392,7 @@ reads `EMBEDDING_DIM` from settings; switching models requires a re-embed migrat
 ### Phase 4+: Future
 - **Voice:** Whisper API + audio download from Telegram + cost monitoring
 - **RAG over docs:** Reuse pgvector; new `documents` table; chunking strategy
-- **Vision:** Claude vision API; image download from Telegram
+- **Vision:** vision-capable LLM (Gemini 2.5 supports vision natively; revisit at the time); image download from Telegram
 - **Proactive:** Celery Beat for scheduled tasks (morning briefing, reminders)
 - **CLI:** Click-based CLI hitting same FastAPI endpoints (Telegram becomes one of many channels)
 
@@ -445,29 +450,36 @@ External attack surface:
 ### 7.3 Cost Control
 
 ```
-Cost categories per month (NIS):
-┌────────────────────────┬─────────┐
-│ Hetzner CAX11          │   ~14   │
-│ Domain (amortized)     │    ~4   │
-│ Anthropic (Haiku+cache)│  15-20  │
-│ Anthropic (Sonnet)     │   2-5   │
-│ Voyage embeddings      │    ~1   │
-│ Groq (free tier)       │     0   │
-│ LangSmith (free)       │     0   │
-│ Sentry (free)          │     0   │
-│ Backups (R2 free)      │     0   │
-├────────────────────────┼─────────┤
-│ Total target           │  35-45  │
-│ Budget                 │     50  │
-└────────────────────────┴─────────┘
+Cost categories per month (NIS) — Phase 1 (free-tier LLMs):
+┌────────────────────────────┬─────────┐
+│ Hetzner CX23               │   ~14   │
+│ Domain (amortized)         │    ~4   │
+│ Gemini 2.5 Flash (AI Studio│     0   │
+│   free tier, ~250 RPD cap) │         │
+│ Groq Llama 3.3 70B (free)  │     0   │
+│ Voyage embeddings (Phase 2)│    ~1   │
+│ LangSmith (free, optional) │     0   │
+│ Sentry (free)              │     0   │
+│ Backups (R2 free)          │     0   │
+├────────────────────────────┼─────────┤
+│ Phase 1 total target       │   ~18   │
+│ Phase 1 budget             │     50  │
+└────────────────────────────┴─────────┘
+
+Post-paid-swap projection (Gemini 2.5 Flash Tier 1, see decisions/llm-provider.md):
+  30 turns/day  → ~4 NIS/mo  → total ~22 NIS/mo (well under 50)
+  60 turns/day  → ~22 NIS/mo → total ~40 NIS/mo (under 50)
+ 100 turns/day → ~44 NIS/mo → total ~62 NIS/mo (OVER without prompt caching)
+                 ~17 NIS/mo with prompt caching → total ~35 NIS/mo
 ```
 
 **Enforcement mechanisms:**
 1. **Per-conversation cap:** 30K tokens; agent forced to summarize on approach.
-2. **Prompt caching:** Anthropic prompt caching for system prompt + tool defs (~90% discount on cached portion).
-3. **Tier routing:** Trivial tasks → Groq; standard → Haiku; complex → Sonnet.
-4. **Daily monitor:** End-of-day Telegram message summarizing usage.
-5. **Hard cap:** If MTD spend > 90% of budget, system pauses with operator alert.
+2. **Prompt caching:** Gemini context caching (implicit + explicit) for system prompt + tool defs (~60% discount on cached input when paid; on the free tier reduces TPM pressure). **Mandatory before any paid swap.**
+3. **Tier routing:** Trivial English tasks → Groq; agent loop → Gemini 2.5 Flash; Hebrew always → Gemini; `complexity_hint=high` lane reserved for future paid escalation.
+4. **Daily quota guard:** Redis counter on Gemini RPD; alert at 80% (200/250), pause LLM tasks at 96% (240/250). Resets at local midnight.
+5. **Daily monitor:** End-of-day Telegram message: RPD used, top 3 expensive turns by token count, NIS spend (zero on free tier).
+6. **Hard cap:** If MTD NIS spend > 90% of 50 NIS budget, system pauses LLM tasks with operator alert. (Slash commands continue to work.)
 
 ### 7.4 Deployment Topology
 
@@ -520,7 +532,7 @@ src/jarvis/
 │   ├── graph.py
 │   ├── nodes.py            # load_context, agent_node, tool_executor, respond
 │   ├── state.py            # AgentState TypedDict
-│   └── llm_router.py       # Haiku/Sonnet/Groq selection
+│   └── llm_router.py       # Gemini Flash / Groq selection; Hebrew always → Gemini
 │
 ├── tools/                  # Tool registry + handlers (the plugin system)
 │   ├── registry.py
@@ -609,7 +621,8 @@ api → workers → agents → tools → integrations → core
 
 | Failure | Symptom | Mitigation |
 |---------|---------|-----------|
-| Anthropic API down | Agent calls fail | Circuit breaker; user message: "AI offline, retry in 1 min" |
+| Gemini API down or rate-limited (429) | Agent calls fail | Circuit breaker; user message: "AI offline, retry in 1 min". Hebrew prompts cannot fail over to Groq; English prompts may degrade to Groq with operator alert. |
+| Gemini free-tier quota cut by Google (silent) | Daily RPD ceiling drops, agent fails mid-day | Operator-alert at 80% RPD; if quota drops below expected, swap to paid Tier 1 (one env var, see decisions/llm-provider.md) |
 | Google API rate limit | Tool failures | Exponential backoff; user-visible degradation message |
 | Worker crash mid-task | Task lost | Celery retry policy (3 attempts) + acks_late |
 | Redis full | New requests rejected | Redis eviction policy `volatile-lru`; alert on usage > 80% |
@@ -617,7 +630,7 @@ api → workers → agents → tools → integrations → core
 | OAuth token expired without refresh | Calendar/Gmail calls 401 | Auto-refresh; rotation persisted; alert if refresh fails |
 | Webhook delivered while worker is down | Message lost | 200 OK from API ensures Telegram doesn't retry forever; queue persists in Redis with AOF |
 | Cost spike | MTD spend exceeds budget | Daily monitor; auto-pause at 90% with alert |
-| Hebrew prompt with weak model | Wrong tool called | Eval suite catches; tier router promotes Hebrew to Haiku/Sonnet |
+| Hebrew prompt with weak model | Wrong tool called | Router pins Hebrew to Gemini (never Groq, which is not trained on Hebrew); eval suite asserts the routing |
 | Worker retry of partially-applied destructive tool | Duplicate calendar event / sent email | Per-tool-call idempotency key in Redis (5 min TTL): hash of `thread_id+tool+params`; skip on hit |
 | Unbounded growth of `messages`, `langgraph_checkpoints`, `audit_log` | Disk fills, queries slow | Beat job (Phase 4): archive `messages` >90d to object storage; prune `langgraph_checkpoints` >30d; partition `audit_log` monthly, never delete |
 | OAuth refresh token expires after 7 days | Calendar/Gmail calls 401 with no recovery | App must be in "Internal" (Workspace) or fully verified before Phase 1 ships; otherwise weekly re-auth ritual is documented |
@@ -628,7 +641,11 @@ api → workers → agents → tools → integrations → core
 
 - LangGraph docs: https://langchain-ai.github.io/langgraph/
 - aiogram 3 docs: https://docs.aiogram.dev/en/latest/
-- Anthropic prompt caching: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
+- Gemini API docs: https://ai.google.dev/gemini-api/docs
+- Gemini context caching: https://ai.google.dev/gemini-api/docs/caching
+- Gemini function calling: https://ai.google.dev/gemini-api/docs/function-calling
+- Groq rate limits: https://console.groq.com/docs/rate-limits
+- Anthropic prompt caching (reference for future paid swap): https://docs.claude.com/en/docs/build-with-claude/prompt-caching
 - pgvector: https://github.com/pgvector/pgvector
 - Twelve-Factor App: https://12factor.net/ (still relevant; informs config + logs)
 - "Building effective agents" (Anthropic): https://www.anthropic.com/research/building-effective-agents

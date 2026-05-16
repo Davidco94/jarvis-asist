@@ -9,7 +9,7 @@
 | Phase | State | Started | Closed |
 |-------|-------|---------|--------|
 | **Phase 0** — Foundation Infrastructure | 🟢 Deployed; E2E verified on prod | 2026-04-29 | 2026-04-30 |
-| Phase 1 — Calendar Agent | ⚪ Not started (blocked on OAuth-mode + Anthropic key) | — | — |
+| Phase 1 — Calendar Agent | 🟡 Decisions locked (OAuth mode = weekly re-auth; LLM = Gemini 2.5 Flash free) — spec revised, ready to slice | 2026-05-17 | — |
 | Phase 2 — Memory Layer | ⚪ Not started | — | — |
 | Phase 3 — Email Agent | ⚪ Not started | — | — |
 | Phase 4+ | ⚪ Not started | — | — |
@@ -34,6 +34,15 @@ Before scaffolding, we revised both spec docs to address 10 gaps. Each is reflec
 | 8 | Hebrew dates: LLM resolution, not `dateparser` | SPEC US-1.11 |
 | 9 | Cost cap clarified (LLM line vs total) | SPEC US-1.1 |
 | 10 | Data retention / archival schema decided in Phase 0 | ARCH §10; SPEC new **US-X.8** |
+
+## Spec revisions (pre-Phase-1, 2026-05-17)
+
+Two operator decisions taken on 2026-04-30 landed in the docs today:
+
+| # | Concern | Where it landed |
+|---|---------|-----------------|
+| 11 | OAuth refresh-token expiry policy → option (c) weekly re-auth ritual | New [docs/decisions/oauth-mode.md](docs/decisions/oauth-mode.md); referenced from SPEC US-1.2 |
+| 12 | LLM provider swap: Anthropic prepay → free Gemini 2.5 Flash primary + Groq trivial | New [docs/decisions/llm-provider.md](docs/decisions/llm-provider.md); ARCH §2 diagram, §4.2, ADR-005, §6 Phase 1/2, §7.3 cost table, §8, §10, §11; SPEC US-1.1, US-1.4, US-1.5, US-1.11, US-1.12, US-1.14, US-1.16 |
 
 ---
 
@@ -102,13 +111,16 @@ Before scaffolding, we revised both spec docs to address 10 gaps. Each is reflec
 
 ## What's blocking each next phase
 
-| Decision / blocker | Owner | Phase it gates | Source |
-|---|---|---|---|
-| OAuth-mode decision (Workspace/Internal vs Verified vs weekly re-auth) | Operator | Phase 1 | SPEC US-1.2 |
-| Anthropic API key + prepaid credits | Operator | Phase 1 | SPEC US-1.1 |
-| Domain name + Hetzner VM + DNS A record | Operator | Phase 0 close (US-0.10) | SPEC US-0.10 |
-| Embedding provider lock (Voyage vs OpenAI) — affects `EMBEDDING_DIM` migration | Operator | Phase 2 | SPEC §6 Q3 |
-| Eval threshold confirmation (85% suggested) | Operator | Phase 1 close | SPEC §6 Q4 |
+| Decision / blocker | Owner | Phase it gates | Source | Status |
+|---|---|---|---|---|
+| ~~OAuth-mode decision~~ | Operator | Phase 1 | SPEC US-1.2 | ✅ Locked 2026-04-30 — weekly re-auth (docs/decisions/oauth-mode.md) |
+| ~~Anthropic API key + prepaid credits~~ | Operator | Phase 1 | SPEC US-1.1 | ✅ Superseded 2026-05-17 — Gemini 2.5 Flash free tier (docs/decisions/llm-provider.md) |
+| Google AI Studio API key (Gemini free) | Operator | Phase 1 | SPEC US-1.1 | ⚪ TODO (operator to obtain) |
+| Groq API key (free) | Operator | Phase 1 | SPEC US-1.1 | ⚪ TODO (operator to obtain) |
+| GCP project + OAuth client for Calendar | Operator | Phase 1 | SPEC US-1.2 | ⚪ TODO (operator to provision) |
+| ~~Domain name + Hetzner VM + DNS A record~~ | Operator | Phase 0 close (US-0.10) | SPEC US-0.10 | ✅ Done 2026-04-30 |
+| Embedding provider lock (Voyage vs OpenAI) — affects `EMBEDDING_DIM` migration | Operator | Phase 2 | SPEC §6 Q3 | ⚪ Phase 2 |
+| Eval threshold confirmation (85% suggested) | Operator | Phase 1 close | SPEC §6 Q4 | ⚪ Phase 1 close |
 
 ---
 
@@ -143,6 +155,15 @@ prompts/                              # Phase 1+
 ---
 
 ## Changelog
+
+### 2026-05-17 — Phase 1 unblocked: OAuth + LLM decisions locked, spec revised
+
+- **OAuth mode locked:** option (c) weekly re-auth ritual. Operator runs `scripts/authorize_google.py` each Monday. Decision recorded in `docs/decisions/oauth-mode.md`. Reason: paid Workspace busts the 50 NIS/mo budget; verification is wrong disclosure surface for a single-user system.
+- **LLM provider locked:** Gemini 2.5 Flash (AI Studio free tier) primary; Groq Llama 3.3 70B Versatile for trivial English-only routing. Decision recorded in `docs/decisions/llm-provider.md`. Hebrew was the deciding factor — Llama 3.3 isn't officially trained on it. Paid Tier 1 Gemini documented as one-env-var swap when justified.
+- **Spec docs revised:**
+  - `docs/PRODUCT_SPEC.md`: US-1.1 (LLM setup + RPD/TPM guards), US-1.4 (multi-provider schema), US-1.5 (LLMs + no streaming + Hebrew pinning), US-1.11 (LLM-resolved dates wording), US-1.12 (Hebrew routing assertion + paid-swap trigger), US-1.14 (Gemini Flash as judge), US-1.16 (Gemini context caching).
+  - `docs/ARCHITECTURE.md`: §2 diagram bottom-row, §4.2 AI stack table, ADR-005 rewritten, §6 Phase 0/1/2 component lists, §7.3 cost table + enforcement, §8 llm_router.py annotation, §10 failure modes (Gemini API down + quota cut), §11 references.
+- No code yet. Next: Phase 1 slicing plan.
 
 ### 2026-04-30 — Phase 0 closed (production deploy + E2E)
 
